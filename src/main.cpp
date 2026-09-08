@@ -12,10 +12,61 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <filesystem>
 #include "GameList.h"
 #include "Controller.h"
 #include "Settings.h"
 #include "HardwareOptimizer.h"
+
+// ============================================================
+// Path Resolution (Works in Dev Build & Live OS /opt/malik-game-os)
+// ============================================================
+
+static std::string getBaseDirectory()
+{
+    // Check standard installation path first (Live OS / VM)
+    if (std::filesystem::exists("/opt/malik-game-os/config/settings.ini"))
+        return "/opt/malik-game-os";
+
+    // Running from project root
+    if (std::filesystem::exists("config/settings.ini"))
+        return ".";
+
+    // Running from build/ directory
+    if (std::filesystem::exists("../config/settings.ini"))
+        return "..";
+
+    const char* home = std::getenv("HOME");
+    if (home && std::filesystem::exists(std::string(home) + "/debianos/config/settings.ini"))
+        return std::string(home) + "/debianos";
+
+    return ".";
+}
+
+static std::string resolveBinary(const std::string& name, const std::string& baseDir)
+{
+    // Check baseDir/bin/
+    std::string candidate = baseDir + "/bin/" + name;
+    if (std::filesystem::exists(candidate))
+        return candidate;
+
+    // Check system-wide paths
+    if (std::filesystem::exists("/usr/local/bin/" + name))
+        return "/usr/local/bin/" + name;
+
+    if (std::filesystem::exists("/usr/bin/" + name))
+        return "/usr/bin/" + name;
+
+    const char* home = std::getenv("HOME");
+    if (home)
+    {
+        candidate = std::string(home) + "/debianos/bin/" + name;
+        if (std::filesystem::exists(candidate))
+            return candidate;
+    }
+
+    return name;
+}
 
 // ============================================================
 // DuckStation configuration
@@ -384,17 +435,12 @@ static pid_t launchGame(
     const std::string&     pcsx2SettingsPath)
 {
     // ----------------------------------------------------------
-    // Resolve wrapper script paths from HOME
-    // The wrappers live in bin/ and set LD_LIBRARY_PATH to the
-    // bundled libs inside pcsx2-squashfs-root, bypassing FUSE.
+    // Resolve wrapper script paths dynamically
     // ----------------------------------------------------------
 
-    const char* home = std::getenv("HOME");
-    const std::string binBase =
-        home ? std::string(home) + "/debianos/bin" : "";
-
-    const std::string duckstationBin = binBase + "/duckstation";
-    const std::string pcsx2Bin       = binBase + "/pcsx2";
+    std::string baseDir = getBaseDirectory();
+    std::string duckstationBin = resolveBinary("duckstation", baseDir);
+    std::string pcsx2Bin       = resolveBinary("pcsx2", baseDir);
 
     // ----------------------------------------------------------
     // Build argument list  (run via bash so the script executes)
@@ -537,11 +583,14 @@ int main()
     }
 
     // ========================================================
-    // Malik settings
+    // Base directory & Malik settings
     // ========================================================
 
+    std::string baseDir = getBaseDirectory();
+    std::cout << "Project Base Directory: " << baseDir << '\n';
+
     Settings settings;
-    const std::string settingsPath = "../config/settings.ini";
+    const std::string settingsPath = baseDir + "/config/settings.ini";
     settings.load(settingsPath);
 
     // ========================================================
@@ -621,7 +670,7 @@ int main()
     // ========================================================
 
     GameList gameList;
-    gameList.scanGames("../games");
+    gameList.scanGames(baseDir + "/games");
 
     // ========================================================
     // Controller

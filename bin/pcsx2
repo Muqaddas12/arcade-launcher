@@ -1,4 +1,14 @@
 #!/bin/bash
-ROOT="$HOME/debianos/emulators/pcsx2-squashfs-root"
+# Malik Game OS - PCSX2 Wrapper
+
+if [ -d "/opt/malik-game-os/emulators/pcsx2-squashfs-root" ]; then
+    ROOT="/opt/malik-game-os/emulators/pcsx2-squashfs-root"
+elif [ -n "$HOME" ] && [ -d "$HOME/debianos/emulators/pcsx2-squashfs-root" ]; then
+    ROOT="$HOME/debianos/emulators/pcsx2-squashfs-root"
+else
+    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+    ROOT="$(dirname "$SCRIPT_DIR")/emulators/pcsx2-squashfs-root"
+fi
+
 export LD_LIBRARY_PATH="$ROOT/usr/lib:$LD_LIBRARY_PATH"
 exec "$ROOT/usr/bin/pcsx2-qt" "$@"
