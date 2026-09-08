@@ -86,27 +86,70 @@ exec ./malik-game-os
 STARTEOF
 chmod +x "$DEST_OPT/start.sh"
 
+echo "[+] Step 3: Configuring X11, autologin, and console permissions..."
+# Xwrapper config - allow non-console startx with root rights
+cat << 'XWREOF' > "$ROOTFS/etc/X11/Xwrapper.config"
+allowed_users=anybody
+needs_root_rights=yes
+XWREOF
+
+# tty1 autologin for user malik
+mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
+cat << 'AUTOLOGINEOF' > "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin malik --noclear %I $TERM
+Type=idle
+AUTOLOGINEOF
+
+# Configure malik shell profile to auto-launch X on tty1
+mkdir -p "$ROOTFS/home/malik"
+cat << 'PROFILESCRIPTEOF' > "$ROOTFS/home/malik/.bash_profile"
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+    exec startx -- -keeptty
+fi
+PROFILESCRIPTEOF
+
+cat << 'XINITEOF' > "$ROOTFS/home/malik/.xinitrc"
+#!/bin/bash
+xset s off -dpms 2>/dev/null || true
+xsetroot -cursor_name left_ptr 2>/dev/null || true
+exec /opt/malik-game-os/start.sh
+XINITEOF
+chmod +x "$ROOTFS/home/malik/.xinitrc"
+
+# Disable legacy service so tty1 autologin cleanly owns the display
+rm -f "$ROOTFS/etc/systemd/system/multi-user.target.wants/malik-game-os.service" \
+      "$ROOTFS/etc/systemd/system/graphical.target.wants/malik-game-os.service" \
+      "$ROOTFS/etc/systemd/system/malik-game-os.service" 2>/dev/null || true
+
 # Fix ownership for user 'malik' inside rootfs
-if id "malik" &>/dev/null; then
-    MALIK_UID=$(id -u malik)
-    MALIK_GID=$(id -g malik)
-else
-    MALIK_UID=1000
-    MALIK_GID=1000
-fi
-
+MALIK_UID=1000
+MALIK_GID=1000
 chown -R "$MALIK_UID:$MALIK_GID" "$DEST_OPT"
-if [ -d "$ROOTFS/home/malik" ]; then
-    chown -R "$MALIK_UID:$MALIK_GID" "$ROOTFS/home/malik"
-fi
+chown -R "$MALIK_UID:$MALIK_GID" "$ROOTFS/home/malik"
 
-echo "[+] Step 3: Preparing live boot kernel and initrd..."
+echo "[+] Step 4: Regenerating initramfs with live-boot hooks..."
+mount --bind /dev "$ROOTFS/dev" 2>/dev/null || true
+mount --bind /dev/pts "$ROOTFS/dev/pts" 2>/dev/null || true
+mount -t proc proc "$ROOTFS/proc" 2>/dev/null || true
+mount -t sysfs sysfs "$ROOTFS/sys" 2>/dev/null || true
+
+# Update initramfs inside rootfs so live-boot hooks are embedded
+chroot "$ROOTFS" update-initramfs -u -k all
+
+umount -l "$ROOTFS/sys" 2>/dev/null || true
+umount -l "$ROOTFS/proc" 2>/dev/null || true
+umount -l "$ROOTFS/dev/pts" 2>/dev/null || true
+umount -l "$ROOTFS/dev" 2>/dev/null || true
+
+echo "[+] Step 5: Preparing live boot kernel and initrd..."
 mkdir -p "$ISO_DIR/live"
 mkdir -p "$ISO_DIR/boot/grub"
 mkdir -p "$OUTPUT_DIR"
 
-VMLINUZ=$(find "$ROOTFS/boot" -maxdepth 1 -name "vmlinuz*" | head -n 1)
-INITRD=$(find "$ROOTFS/boot" -maxdepth 1 -name "initrd.img*" | head -n 1)
+VMLINUZ=$(find "$ROOTFS/boot" -maxdepth 1 -name "vmlinuz*" | sort -V | tail -n 1)
+INITRD=$(find "$ROOTFS/boot" -maxdepth 1 -name "initrd.img*" | sort -V | tail -n 1)
 
 if [ -z "$VMLINUZ" ] || [ -z "$INITRD" ]; then
     echo "[-] Error: Kernel or initrd not found in $ROOTFS/boot/"
@@ -119,30 +162,35 @@ echo "    Using Initrd: $(basename "$INITRD")"
 cp -f "$VMLINUZ" "$ISO_DIR/live/vmlinuz"
 cp -f "$INITRD" "$ISO_DIR/live/initrd.img"
 
-echo "[+] Step 4: Configuring GRUB bootloader..."
+echo "[+] Step 6: Configuring GRUB bootloader..."
 cat << 'GRUBEOF' > "$ISO_DIR/boot/grub/grub.cfg"
 set timeout=3
 set default=0
 
 menuentry "Malik Game OS (Arcade Console)" {
-    linux /live/vmlinuz boot=live quiet splash components
+    linux /live/vmlinuz boot=live components
     initrd /live/initrd.img
 }
 
-menuentry "Malik Game OS (Failsafe / Nomodeset)" {
-    linux /live/vmlinuz boot=live nomodeset
+menuentry "Malik Game OS (Safe Graphics / Nomodeset)" {
+    linux /live/vmlinuz boot=live nomodeset components
+    initrd /live/initrd.img
+}
+
+menuentry "Malik Game OS (Debug Shell)" {
+    linux /live/vmlinuz boot=live components debug
     initrd /live/initrd.img
 }
 GRUBEOF
 
-echo "[+] Step 5: Building compressed squashfs filesystem (this may take 1-2 minutes)..."
+echo "[+] Step 7: Building compressed squashfs filesystem (this may take 1-2 minutes)..."
 rm -f "$ISO_DIR/live/filesystem.squashfs"
 mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" \
     -comp xz \
     -e boot \
     -noappend
 
-echo "[+] Step 6: Generating final bootable ISO (MalikGameOS.iso)..."
+echo "[+] Step 8: Generating final bootable ISO (MalikGameOS.iso)..."
 ISO_OUTPUT="$OUTPUT_DIR/MalikGameOS.iso"
 rm -f "$ISO_OUTPUT"
 grub-mkrescue -o "$ISO_OUTPUT" "$ISO_DIR"
