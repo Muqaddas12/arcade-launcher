@@ -1,2 +1,4 @@
 #!/bin/bash
-exec "$HOME/debianos/emulators/DuckStation-x64.AppImage" "$@"
+ROOT="$HOME/debianos/emulators/pcsx2-squashfs-root"
+export LD_LIBRARY_PATH="$ROOT/usr/lib:$LD_LIBRARY_PATH"
+exec "$ROOT/usr/bin/duckstation-qt" "$@"

@@ -382,24 +382,24 @@ static pid_t launchGame(
     const std::string& duckStationSettingsPath)
 {
     // ----------------------------------------------------------
-    // Resolve emulator absolute paths from HOME
+    // Resolve wrapper script paths from HOME
+    // The wrappers live in bin/ and set LD_LIBRARY_PATH to the
+    // bundled libs inside pcsx2-squashfs-root, bypassing FUSE.
     // ----------------------------------------------------------
 
     const char* home = std::getenv("HOME");
-    const std::string emuBase =
-        home ? std::string(home) + "/debianos/emulators" : "";
+    const std::string binBase =
+        home ? std::string(home) + "/debianos/bin" : "";
 
-    const std::string duckstationBin =
-        emuBase + "/DuckStation-x64.AppImage";
-
-    const std::string pcsx2Bin =
-        emuBase + "/PCSX2.AppImage";
+    const std::string duckstationBin = binBase + "/duckstation";
+    const std::string pcsx2Bin       = binBase + "/pcsx2";
 
     // ----------------------------------------------------------
-    // Build argument list
+    // Build argument list  (run via bash so the script executes)
     // ----------------------------------------------------------
 
     std::vector<std::string> args;
+    args.push_back("/bin/bash");
 
     if (game.system == "PS1")
     {
