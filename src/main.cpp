@@ -422,7 +422,7 @@ static pid_t launchGame(
         args.push_back(pcsx2Bin);
 
         if (settings.fullscreen)
-            args.push_back("--fullscreen");
+            args.push_back("-bigpicture");
 
         args.push_back(game.path);
     }
