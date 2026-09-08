@@ -16,6 +16,7 @@ add_executable(malik-game-os
     src/Controller.cpp
     src/Settings.cpp
     src/DuckStationSettings.cpp
+    src/HardwareOptimizer.cpp
 )
 
 target_include_directories(malik-game-os PRIVATE

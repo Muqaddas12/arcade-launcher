@@ -15,6 +15,7 @@
 #include "GameList.h"
 #include "Controller.h"
 #include "Settings.h"
+#include "HardwareOptimizer.h"
 
 // ============================================================
 // DuckStation configuration
@@ -376,10 +377,11 @@ static void saveMalikSettings(
 // ============================================================
 
 static pid_t launchGame(
-    const Game&        game,
-    const Settings&    settings,
-    DuckStationConfig& duckConfig,
-    const std::string& duckStationSettingsPath)
+    const Game&            game,
+    const Settings&        settings,
+    const HardwareProfile& hwProfile,
+    const std::string&     duckStationSettingsPath,
+    const std::string&     pcsx2SettingsPath)
 {
     // ----------------------------------------------------------
     // Resolve wrapper script paths from HOME
@@ -403,27 +405,22 @@ static pid_t launchGame(
 
     if (game.system == "PS1")
     {
-        // Silently push DuckStation settings before launching
-        if (!duckStationSettingsPath.empty())
-        {
-            writeDuckStationConfig(
-                duckStationSettingsPath, duckConfig);
-        }
+        // Re-optimize DuckStation configuration for detected hardware + always fullscreen
+        HardwareOptimizer::optimizeDuckStation(duckStationSettingsPath, hwProfile);
 
         args.push_back(duckstationBin);
-
-        if (settings.fullscreen)
-            args.push_back("-fullscreen");
-
+        args.push_back("-fullscreen"); // Always Fullscreen
+        args.push_back("-batch");      // Clean arcade exit
+        args.push_back("-fastboot");   // Fast boot into game at 60 FPS
         args.push_back(game.path);
     }
     else if (game.system == "PS2")
     {
+        // Re-optimize PCSX2 configuration for detected hardware + always fullscreen
+        HardwareOptimizer::optimizePCSX2(pcsx2SettingsPath, hwProfile);
+
         args.push_back(pcsx2Bin);
-
-        if (settings.fullscreen)
-            args.push_back("-bigpicture");
-
+        args.push_back("-bigpicture"); // Always Fullscreen TV/Arcade interface
         args.push_back(game.path);
     }
     else
@@ -548,25 +545,30 @@ int main()
     settings.load(settingsPath);
 
     // ========================================================
-    // DuckStation settings  (silent – not shown in UI)
+    // Hardware Auto-Detection & 60 FPS Optimization
     // ========================================================
 
+    HardwareProfile hwProfile = HardwareOptimizer::detectHardware();
+
+    std::cout << "========================================\n";
+    std::cout << "Auto-Detected Hardware Profile:\n";
+    std::cout << "  CPU: " << hwProfile.cpuModel << '\n';
+    std::cout << "  Threads: " << hwProfile.cpuThreads
+              << " | Total RAM: " << static_cast<int>(hwProfile.totalRamGB * 10.0) / 10.0 << " GB\n";
+    std::cout << "  Profile: " << hwProfile.tierName << '\n';
+    std::cout << "  PS1 Scale: " << hwProfile.ps1ResolutionScale
+              << "x | PS2 Scale: " << hwProfile.ps2UpscaleMultiplier << "x\n";
+    std::cout << "  Target: Always Fullscreen @ 60 FPS\n";
+    std::cout << "========================================\n";
+
     const std::string duckStationSettingsPath =
-        getDuckStationSettingsPath();
+        HardwareOptimizer::getDuckStationSettingsPath();
+    const std::string pcsx2SettingsPath =
+        HardwareOptimizer::getPCSX2SettingsPath();
 
-    DuckStationConfig duckConfig;
-
-    if (!duckStationSettingsPath.empty())
-    {
-        readDuckStationConfig(duckStationSettingsPath, duckConfig);
-        std::cout
-            << "DuckStation settings: "
-            << duckStationSettingsPath << '\n';
-    }
-    else
-    {
-        std::cerr << "HOME environment variable not found.\n";
-    }
+    // Pre-apply 60 FPS and Fullscreen optimizations to both emulators
+    HardwareOptimizer::optimizeDuckStation(duckStationSettingsPath, hwProfile);
+    HardwareOptimizer::optimizePCSX2(pcsx2SettingsPath, hwProfile);
 
     // ========================================================
     // Window
@@ -822,8 +824,9 @@ int main()
                         {
                             pid_t pid = launchGame(
                                 *game, settings,
-                                duckConfig,
-                                duckStationSettingsPath);
+                                hwProfile,
+                                duckStationSettingsPath,
+                                pcsx2SettingsPath);
 
                             if (pid > 0)
                             {
@@ -1063,8 +1066,9 @@ int main()
                     {
                         pid_t pid = launchGame(
                             *game, settings,
-                            duckConfig,
-                            duckStationSettingsPath);
+                            hwProfile,
+                            duckStationSettingsPath,
+                            pcsx2SettingsPath);
 
                         if (pid > 0)
                         {
@@ -1380,22 +1384,42 @@ int main()
         else if (screen == Screen::SystemSettings)
         {
             drawText(renderer, titleFont,
-                     "SYSTEM", 70, 45, white);
+                     "SYSTEM & HARDWARE", 70, 45, white);
 
             drawText(renderer, font,
-                     "Malik Game OS",   90, 160, white);
+                     "Malik Game OS (Arcade Edition)", 90, 130, white);
+
+            std::string cpuShort = hwProfile.cpuModel;
+            if (cpuShort.size() > 36)
+                cpuShort = cpuShort.substr(0, 36) + "...";
 
             drawText(renderer, font,
-                     "Version 1.0",     90, 220, gray);
+                     "CPU: " + cpuShort, 90, 185, gray);
+
+            char specBuf[80];
+            snprintf(specBuf, sizeof(specBuf), "Threads: %d   |   RAM: %.1f GB",
+                     hwProfile.cpuThreads, hwProfile.totalRamGB);
+            drawText(renderer, font, specBuf, 90, 235, gray);
 
             drawText(renderer, font,
-                     "PS1: DuckStation", 90, 280, gray);
+                     "Profile: " + hwProfile.tierName, 90, 290, white);
 
             drawText(renderer, font,
-                     "PS2: PCSX2",       90, 340, gray);
+                     "Target: 60 FPS (Hardware Auto-Tuned)", 90, 340, white);
 
             drawText(renderer, font,
-                     "B = BACK",         90, 620, gray);
+                     "Display: Always Fullscreen (Forced)", 90, 395, gray);
+
+            drawText(renderer, font,
+                     "PS1: DuckStation (" + std::to_string(hwProfile.ps1ResolutionScale) + "x Native)",
+                     90, 445, gray);
+
+            drawText(renderer, font,
+                     "PS2: PCSX2 (" + std::to_string(hwProfile.ps2UpscaleMultiplier) + "x Native + MTVU)",
+                     90, 495, gray);
+
+            drawText(renderer, font,
+                     "B = BACK", 90, 620, gray);
         }
 
         // --------------------------------------------------------
