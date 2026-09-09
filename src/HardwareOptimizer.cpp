@@ -3,12 +3,36 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <sys/sysinfo.h>
 #include <thread>
 #include <vector>
+
+static void copyBiosFiles(const std::string& sourceDir, const std::string& destDir)
+{
+    try
+    {
+        if (std::filesystem::exists(sourceDir))
+        {
+            std::filesystem::create_directories(destDir);
+            for (const auto& entry : std::filesystem::directory_iterator(sourceDir))
+            {
+                if (entry.is_regular_file() && entry.file_size() > 0)
+                {
+                    std::string destFile = destDir + "/" + entry.path().filename().string();
+                    if (!std::filesystem::exists(destFile))
+                    {
+                        std::filesystem::copy_file(entry.path(), destFile, std::filesystem::copy_options::overwrite_existing);
+                    }
+                }
+            }
+        }
+    }
+    catch (...) {}
+}
 
 static std::string trim(const std::string& str)
 {
@@ -225,6 +249,11 @@ bool HardwareOptimizer::optimizeDuckStation(
     if (settingsPath.empty())
         return false;
 
+    // Ensure parent directory exists
+    try {
+        std::filesystem::create_directories(std::filesystem::path(settingsPath).parent_path());
+    } catch (...) {}
+
     std::vector<std::string> lines;
     {
         std::ifstream file(settingsPath);
@@ -242,6 +271,9 @@ bool HardwareOptimizer::optimizeDuckStation(
     setIniValue(lines, "Main", "ConfirmPowerOff", "false");
     setIniValue(lines, "Main", "ApplyGameSettings", "true");
     setIniValue(lines, "Main", "EmulationSpeed", "1");
+    setIniValue(lines, "Main", "SetupWizardIncomplete", "false");
+    setIniValue(lines, "UI", "SetupWizardIncomplete", "false");
+    setIniValue(lines, "AutoUpdater", "CheckAtStartup", "false");
 
     setIniValue(lines, "Display", "ExclusiveFullscreenControl", "Automatic");
     setIniValue(lines, "Display", "VSync", "true");
@@ -267,12 +299,57 @@ bool HardwareOptimizer::optimizeDuckStation(
     setIniValue(lines, "CPU", "RecompilerBlockLinking", "true");
     setIniValue(lines, "BIOS", "PatchFastBoot", "true");
 
+    // Locate and configure PS1 BIOS
+    std::string ps1BiosDir;
+    if (std::filesystem::exists("/opt/malik-game-os/games/Bios/Ps1"))
+        ps1BiosDir = "/opt/malik-game-os/games/Bios/Ps1";
+    else if (std::filesystem::exists("games/Bios/Ps1"))
+        ps1BiosDir = "games/Bios/Ps1";
+    else if (std::filesystem::exists("../games/Bios/Ps1"))
+        ps1BiosDir = "../games/Bios/Ps1";
+    else {
+        const char* home = std::getenv("HOME");
+        if (home && std::filesystem::exists(std::string(home) + "/debianos/games/Bios/Ps1"))
+            ps1BiosDir = std::string(home) + "/debianos/games/Bios/Ps1";
+    }
+
+    if (!ps1BiosDir.empty())
+    {
+        const char* home = std::getenv("HOME");
+        std::string targetDir = ps1BiosDir;
+        if (home)
+        {
+            std::string destBios = std::string(home) + "/.local/share/duckstation/bios";
+            copyBiosFiles(ps1BiosDir, destBios);
+            try {
+                if (std::filesystem::exists(destBios + "/SCPH1001 (1).BIN") && !std::filesystem::exists(destBios + "/scph1001.bin"))
+                    std::filesystem::copy_file(destBios + "/SCPH1001 (1).BIN", destBios + "/scph1001.bin");
+                if (std::filesystem::exists(destBios + "/SCPH1001 (1).BIN") && !std::filesystem::exists(destBios + "/SCPH1001.BIN"))
+                    std::filesystem::copy_file(destBios + "/SCPH1001 (1).BIN", destBios + "/SCPH1001.BIN");
+            } catch (...) {}
+            targetDir = destBios;
+        }
+        setIniValue(lines, "BIOS", "SearchDirectory", targetDir);
+    }
+
     std::ofstream out(settingsPath);
     if (!out.is_open())
         return false;
 
     for (const auto& l : lines)
         out << l << '\n';
+    out.close();
+
+    // Mirror settings to ~/.config/duckstation/settings.ini
+    const char* home = std::getenv("HOME");
+    if (home)
+    {
+        try {
+            std::string altPath = std::string(home) + "/.config/duckstation/settings.ini";
+            std::filesystem::create_directories(std::filesystem::path(altPath).parent_path());
+            std::filesystem::copy_file(settingsPath, altPath, std::filesystem::copy_options::overwrite_existing);
+        } catch (...) {}
+    }
 
     return true;
 }
@@ -283,6 +360,11 @@ bool HardwareOptimizer::optimizePCSX2(
 {
     if (settingsPath.empty())
         return false;
+
+    // Ensure parent directory exists
+    try {
+        std::filesystem::create_directories(std::filesystem::path(settingsPath).parent_path());
+    } catch (...) {}
 
     std::vector<std::string> lines;
     {
@@ -303,6 +385,8 @@ bool HardwareOptimizer::optimizePCSX2(
     setIniValue(lines, "UI", "PauseOnFocusLoss", "false");
     setIniValue(lines, "UI", "DoubleClickTogglesFullscreen", "true");
     setIniValue(lines, "UI", "RenderToSeparateWindow", "false");
+    setIniValue(lines, "UI", "SetupWizardIncomplete", "false");
+    setIniValue(lines, "AutoUpdater", "CheckAtStartup", "false");
 
     // Speedhacks for 60 FPS
     setIniValue(lines, "EmuCore", "EnableFastBoot", "true");
@@ -336,12 +420,52 @@ bool HardwareOptimizer::optimizePCSX2(
     setIniValue(lines, "EmuCore/GS", "VsyncEnable", "false"); // Disable double-buffer vsync dips on low-end
     setIniValue(lines, "EmuCore/GS", "Renderer", "-1");       // Auto/best renderer
 
+    // Locate and configure PS2 BIOS
+    std::string ps2BiosDir;
+    if (std::filesystem::exists("/opt/malik-game-os/games/Bios/Ps2"))
+        ps2BiosDir = "/opt/malik-game-os/games/Bios/Ps2";
+    else if (std::filesystem::exists("games/Bios/Ps2"))
+        ps2BiosDir = "games/Bios/Ps2";
+    else if (std::filesystem::exists("../games/Bios/Ps2"))
+        ps2BiosDir = "../games/Bios/Ps2";
+    else {
+        const char* home = std::getenv("HOME");
+        if (home && std::filesystem::exists(std::string(home) + "/debianos/games/Bios/Ps2"))
+            ps2BiosDir = std::string(home) + "/debianos/games/Bios/Ps2";
+    }
+
+    if (!ps2BiosDir.empty())
+    {
+        const char* home = std::getenv("HOME");
+        std::string targetDir = ps2BiosDir;
+        if (home)
+        {
+            std::string destBios = std::string(home) + "/.config/PCSX2/bios";
+            copyBiosFiles(ps2BiosDir, destBios);
+            targetDir = destBios;
+        }
+        setIniValue(lines, "Folders", "Bios", targetDir);
+        setIniValue(lines, "Filenames", "BIOS", "ps2-0200a-20040614-100909.bin");
+    }
+
     std::ofstream out(settingsPath);
     if (!out.is_open())
         return false;
 
     for (const auto& l : lines)
         out << l << '\n';
+    out.close();
+
+    // Mirror settings to ~/.config/PCSX2/PCSX2.ini
+    const char* home = std::getenv("HOME");
+    if (home)
+    {
+        try {
+            std::string altPath = std::string(home) + "/.config/PCSX2/PCSX2.ini";
+            std::filesystem::create_directories(std::filesystem::path(altPath).parent_path());
+            std::filesystem::copy_file(settingsPath, altPath, std::filesystem::copy_options::overwrite_existing);
+        } catch (...) {}
+    }
 
     return true;
 }

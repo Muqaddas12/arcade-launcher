@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <filesystem>
 #include "GameList.h"
 #include "Controller.h"
@@ -422,86 +423,120 @@ static void saveMalikSettings(
 }
 
 // ============================================================
-// Launch Game
-// Non-blocking – forks the emulator and returns the child PID.
-// Returns -1 on failure.
+// Build emulator argument list (does NOT fork)
+// Returns empty vector on unknown system.
 // ============================================================
 
-static pid_t launchGame(
+static std::vector<std::string> buildGameArgs(
     const Game&            game,
-    const Settings&        settings,
     const HardwareProfile& hwProfile,
     const std::string&     duckStationSettingsPath,
     const std::string&     pcsx2SettingsPath)
 {
-    // ----------------------------------------------------------
-    // Resolve wrapper script paths dynamically
-    // ----------------------------------------------------------
-
-    std::string baseDir = getBaseDirectory();
+    std::string baseDir       = getBaseDirectory();
     std::string duckstationBin = resolveBinary("duckstation", baseDir);
-    std::string pcsx2Bin       = resolveBinary("pcsx2", baseDir);
-
-    // ----------------------------------------------------------
-    // Build argument list  (run via bash so the script executes)
-    // ----------------------------------------------------------
+    std::string pcsx2Bin      = resolveBinary("pcsx2",       baseDir);
 
     std::vector<std::string> args;
     args.push_back("/bin/bash");
 
     if (game.system == "PS1")
     {
-        // Re-optimize DuckStation configuration for detected hardware + always fullscreen
         HardwareOptimizer::optimizeDuckStation(duckStationSettingsPath, hwProfile);
-
         args.push_back(duckstationBin);
-        args.push_back("-fullscreen"); // Always Fullscreen
-        args.push_back("-batch");      // Clean arcade exit
-        args.push_back("-fastboot");   // Fast boot into game at 60 FPS
+        args.push_back("-fullscreen");
+        args.push_back("-batch");
+        args.push_back("-fastboot");
         args.push_back(game.path);
     }
     else if (game.system == "PS2")
     {
-        // Re-optimize PCSX2 configuration for detected hardware + always fullscreen
         HardwareOptimizer::optimizePCSX2(pcsx2SettingsPath, hwProfile);
-
         args.push_back(pcsx2Bin);
-        args.push_back("-bigpicture"); // Always Fullscreen TV/Arcade interface
+        args.push_back("-fullscreen");
+        args.push_back("-batch");
+        args.push_back("-fastboot");
         args.push_back(game.path);
     }
     else
     {
         std::cerr << "Unknown system: " << game.system << '\n';
-        return -1;
+        args.clear();
     }
 
+    return args;
+}
+
+// ============================================================
+// Run game – BLOCKING.
+// Tears down the SDL window/renderer so the emulator gets
+// exclusive display access (required in VMware / headless X).
+// Rebuilds SDL after the emulator exits and returns true.
+// Returns false if the fork or exec failed.
+// ============================================================
+
+static bool runGameBlocking(
+    const Game&            game,
+    const HardwareProfile& hwProfile,
+    const std::string&     duckStationSettingsPath,
+    const std::string&     pcsx2SettingsPath,
+    const Settings&        settings,
+    TTF_Font*&             font,
+    TTF_Font*&             titleFont,
+    SDL_Renderer*&         renderer,
+    SDL_Window*&           window)
+{
+    auto args = buildGameArgs(
+        game, hwProfile,
+        duckStationSettingsPath, pcsx2SettingsPath);
+
+    if (args.empty())
+        return false;
+
+    std::cout << "Launching: " << game.name  << '\n';
+    std::cout << "System: "   << game.system << '\n';
+    std::cout << "Path: "     << game.path   << '\n';
+
     // ----------------------------------------------------------
-    // Build null-terminated argv
+    // Release ALL SDL resources so the emulator owns the display
+    // ----------------------------------------------------------
+
+    TTF_CloseFont(font);
+    TTF_CloseFont(titleFont);
+    font      = nullptr;
+    titleFont = nullptr;
+
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    renderer = nullptr;
+    window   = nullptr;
+
+    TTF_Quit();
+    SDL_Quit();
+
+    // ----------------------------------------------------------
+    // Fork + exec emulator
     // ----------------------------------------------------------
 
     std::vector<char*> argv;
-
     for (auto& s : args)
         argv.push_back(const_cast<char*>(s.c_str()));
-
     argv.push_back(nullptr);
-
-    std::cout << "Launching: " << game.name   << '\n';
-    std::cout << "System: "   << game.system  << '\n';
-    std::cout << "Path: "     << game.path    << '\n';
-
-    // ----------------------------------------------------------
-    // Fork
-    // ----------------------------------------------------------
 
     pid_t pid = fork();
 
     if (pid == 0)
     {
-        // Child process – replace image with emulator
-        execvp(argv[0], argv.data());
+        // Child process: redirect output to log file for debugging
+        int logFd = open("/tmp/game_launch.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (logFd >= 0)
+        {
+            dup2(logFd, STDOUT_FILENO);
+            dup2(logFd, STDERR_FILENO);
+            close(logFd);
+        }
 
-        // execvp only returns on failure
+        execvp(argv[0], argv.data());
         std::cerr << "exec failed: " << argv[0] << '\n';
         _exit(1);
     }
@@ -509,11 +544,50 @@ static pid_t launchGame(
     if (pid < 0)
     {
         std::cerr << "fork() failed.\n";
-        return -1;
+    }
+    else
+    {
+        std::cout << "Game PID: " << pid << '\n';
+        // Block until emulator exits
+        int status = 0;
+        waitpid(pid, &status, 0);
+        std::cout << "Game exited. Returning to Malik Game OS.\n";
     }
 
-    std::cout << "Game PID: " << pid << '\n';
-    return pid;
+    // ----------------------------------------------------------
+    // Rebuild SDL so the launcher UI can resume
+    // ----------------------------------------------------------
+
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER);
+    TTF_Init();
+
+    Uint32 windowFlags = SDL_WINDOW_SHOWN;
+    if (settings.fullscreen)
+        windowFlags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+
+    window = SDL_CreateWindow(
+        "Malik Game OS",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        settings.screenWidth,
+        settings.screenHeight,
+        windowFlags);
+
+    if (window)
+    {
+        renderer = SDL_CreateRenderer(
+            window, -1,
+            SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    }
+
+    const char* fontPath =
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    font      = TTF_OpenFont(fontPath, 28);
+    titleFont = TTF_OpenFont(fontPath, 44);
+
+    SDL_RaiseWindow(window);
+
+    return (pid > 0);
 }
 
 // ============================================================
@@ -728,13 +802,6 @@ int main()
     int displaySelection  = 0;
     int audioSelection    = 0;
 
-    // ========================================================
-    // Game-running state
-    // ========================================================
-
-    pid_t gamePid     = -1;
-    bool  gameRunning = false;
-
     bool      running = true;
     SDL_Event event;
 
@@ -744,49 +811,6 @@ int main()
 
     while (running)
     {
-        // ----------------------------------------------------
-        // Check if game process has exited
-        // ----------------------------------------------------
-
-        if (gameRunning && gamePid > 0)
-        {
-            int status = 0;
-            pid_t result = waitpid(gamePid, &status, WNOHANG);
-
-            if (result == gamePid)
-            {
-                // Game exited – restore the launcher
-                gameRunning = false;
-                gamePid     = -1;
-
-                SDL_ShowWindow(window);
-                if (settings.fullscreen)
-                {
-                    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-                }
-                SDL_RaiseWindow(window);
-
-                std::cout
-                    << "Game exited. "
-                    << "Returning to Malik Game OS.\n";
-            }
-            else
-            {
-                // Game is still running!
-                // Drain events without processing game input
-                while (SDL_PollEvent(&event))
-                {
-                    if (event.type == SDL_QUIT)
-                    {
-                        running = false;
-                    }
-                }
-
-                // Sleep to consume 0% CPU while game is playing
-                SDL_Delay(50);
-                continue; // Do not render anything while game is active!
-            }
-        }
 
         // ----------------------------------------------------
         // Event loop
@@ -805,26 +829,7 @@ int main()
                 running = false;
             }
 
-            // ------------------------------------------------
-            // Windows / Super key
-            // Always handled, even while a game is running.
-            // Brings the launcher window to the front.
-            // ------------------------------------------------
 
-            if (event.type == SDL_KEYDOWN &&
-                (event.key.keysym.sym == SDLK_LGUI ||
-                 event.key.keysym.sym == SDLK_RGUI))
-            {
-                SDL_RestoreWindow(window);
-                SDL_RaiseWindow(window);
-            }
-
-            // ------------------------------------------------
-            // While game is running: block all other input
-            // ------------------------------------------------
-
-            if (gameRunning)
-                continue;
 
             // =================================================
             // Keyboard input  (launcher only)
@@ -891,18 +896,16 @@ int main()
                     {
                         if (auto game = gameList.getSelectedGame())
                         {
-                            pid_t pid = launchGame(
-                                *game, settings,
-                                hwProfile,
+                            // Destroy SDL, block until emulator exits,
+                            // then rebuild SDL — gives emulator exclusive
+                            // display access (fixes VMware black-window issue)
+                            runGameBlocking(
+                                *game, hwProfile,
                                 duckStationSettingsPath,
-                                pcsx2SettingsPath);
-
-                            if (pid > 0)
-                            {
-                                gamePid     = pid;
-                                gameRunning = true;
-                                SDL_HideWindow(window);
-                            }
+                                pcsx2SettingsPath,
+                                settings,
+                                font, titleFont,
+                                renderer, window);
                         }
                     }
 
@@ -1133,18 +1136,13 @@ int main()
                 {
                     if (auto game = gameList.getSelectedGame())
                     {
-                        pid_t pid = launchGame(
-                            *game, settings,
-                            hwProfile,
+                        runGameBlocking(
+                            *game, hwProfile,
                             duckStationSettingsPath,
-                            pcsx2SettingsPath);
-
-                        if (pid > 0)
-                        {
-                            gamePid     = pid;
-                            gameRunning = true;
-                            SDL_HideWindow(window);
-                        }
+                            pcsx2SettingsPath,
+                            settings,
+                            font, titleFont,
+                            renderer, window);
                     }
                 }
                 else if (screen == Screen::Settings)
@@ -1475,27 +1473,18 @@ int main()
 
         SDL_RenderPresent(renderer);
 
-        // Slow down the loop while game is running
-        // (launcher is minimized, no need for 120fps)
-        SDL_Delay(gameRunning ? 100 : 8);
+        SDL_Delay(8);
     }
 
     // ============================================================
     // Cleanup
     // ============================================================
 
-    // If a game is still running, terminate it gracefully
-    if (gameRunning && gamePid > 0)
-    {
-        kill(gamePid, SIGTERM);
-        waitpid(gamePid, nullptr, 0);
-    }
+    if (font)      TTF_CloseFont(font);
+    if (titleFont) TTF_CloseFont(titleFont);
 
-    TTF_CloseFont(font);
-    TTF_CloseFont(titleFont);
-
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    if (renderer)  SDL_DestroyRenderer(renderer);
+    if (window)    SDL_DestroyWindow(window);
 
     TTF_Quit();
     SDL_Quit();

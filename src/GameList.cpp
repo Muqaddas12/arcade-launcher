@@ -76,6 +76,14 @@ void GameList::scanGames(const std::string& basePath)
                 if (!file.is_regular_file())
                     continue;
 
+                // Ignore 0-byte dummy files
+                try {
+                    if (file.file_size() < 20)
+                        continue;
+                } catch (...) {
+                    continue;
+                }
+
                 if (hasExtension(
                         file.path(),
                         {".cue", ".chd", ".iso", ".img"}))
@@ -111,6 +119,14 @@ void GameList::scanGames(const std::string& basePath)
             {
                 if (!file.is_regular_file())
                     continue;
+
+                // Ignore 0-byte dummy files (ISOs/BINs must be at least 1MB)
+                try {
+                    if (file.file_size() < 1024 * 1024)
+                        continue;
+                } catch (...) {
+                    continue;
+                }
 
                 if (hasExtension(
                         file.path(),

@@ -65,9 +65,36 @@ ln -sf /opt/malik-game-os/bin/pcsx2 "$ROOTFS/usr/local/bin/pcsx2"
 
 # Copy games if present
 if [ -d "games" ]; then
-    echo "[+] Syncing games..."
+    echo "[+] Syncing games and BIOS..."
+    find games/ -type f -size 0 -delete 2>/dev/null || true
+    find games/ -name "*:Zone.Identifier*" -delete 2>/dev/null || true
     cp -rf games/* "$DEST_OPT/games/" 2>/dev/null || true
+    find "$DEST_OPT/games" -type f -size 0 -delete 2>/dev/null || true
+    find "$DEST_OPT/games" -name "*:Zone.Identifier*" -delete 2>/dev/null || true
+    find "$DEST_OPT/games" -mindepth 2 -type d -empty -delete 2>/dev/null || true
+    chmod -R 777 "$DEST_OPT/games" 2>/dev/null || true
 fi
+
+# Pre-configure DuckStation and PCSX2 directories and BIOS in /etc/skel and /home/malik
+for TARGET_HOME in "$ROOTFS/home/malik" "$ROOTFS/etc/skel"; do
+    mkdir -p "$TARGET_HOME/.config/PCSX2/inis"
+    mkdir -p "$TARGET_HOME/.config/PCSX2/bios"
+    mkdir -p "$TARGET_HOME/.local/share/duckstation/bios"
+    mkdir -p "$TARGET_HOME/.config/duckstation"
+
+    if [ -d "games/Bios/Ps1" ]; then
+        cp -rf games/Bios/Ps1/* "$TARGET_HOME/.local/share/duckstation/bios/" 2>/dev/null || true
+        [ -f "$TARGET_HOME/.local/share/duckstation/bios/SCPH1001 (1).BIN" ] && \
+            cp -f "$TARGET_HOME/.local/share/duckstation/bios/SCPH1001 (1).BIN" "$TARGET_HOME/.local/share/duckstation/bios/scph1001.bin"
+    fi
+
+    if [ -d "games/Bios/Ps2" ]; then
+        cp -rf games/Bios/Ps2/* "$TARGET_HOME/.config/PCSX2/bios/" 2>/dev/null || true
+    fi
+
+    # Set full permissions so emulators can write memory cards / .mec / .nvm
+    chmod -R 777 "$TARGET_HOME/.config/PCSX2" "$TARGET_HOME/.local/share/duckstation" "$TARGET_HOME/.config/duckstation" 2>/dev/null || true
+done
 
 # Copy emulators bundle if present
 if [ -d "emulators/pcsx2-squashfs-root" ]; then
@@ -138,7 +165,7 @@ MALIK_GID=1000
 chown -R "$MALIK_UID:$MALIK_GID" "$DEST_OPT"
 chown -R "$MALIK_UID:$MALIK_GID" "$ROOTFS/home/malik"
 
-echo "[+] Step 4: Installing openbox and regenerating initramfs with live-boot hooks..."
+echo "[+] Step 4: Ensuring openbox and updating initramfs with live-boot hooks..."
 cp -f /etc/resolv.conf "$ROOTFS/etc/resolv.conf" 2>/dev/null || true
 mount --bind /dev "$ROOTFS/dev" 2>/dev/null || true
 mount --bind /dev/pts "$ROOTFS/dev/pts" 2>/dev/null || true
@@ -146,8 +173,10 @@ mount -t proc proc "$ROOTFS/proc" 2>/dev/null || true
 mount -t sysfs sysfs "$ROOTFS/sys" 2>/dev/null || true
 
 # Install openbox if not already present
-chroot "$ROOTFS" apt update
-chroot "$ROOTFS" apt install -y --no-install-recommends openbox
+if ! chroot "$ROOTFS" which openbox >/dev/null 2>&1; then
+    chroot "$ROOTFS" apt update || true
+    chroot "$ROOTFS" apt install -y --no-install-recommends openbox || true
+fi
 
 # Update initramfs inside rootfs so live-boot hooks are embedded
 chroot "$ROOTFS" update-initramfs -u -k all
