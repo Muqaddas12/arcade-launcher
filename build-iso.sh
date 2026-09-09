@@ -178,21 +178,37 @@ cp -f "$INITRD" "$ISO_DIR/live/initrd.img"
 
 echo "[+] Step 6: Configuring GRUB bootloader..."
 cat << 'GRUBEOF' > "$ISO_DIR/boot/grub/grub.cfg"
-set timeout=3
+set timeout=5
 set default=0
 
+insmod all_video
+insmod gfxterm
+set gfxmode=auto
+set gfxpayload=keep
+
 menuentry "Malik Game OS (Arcade Console)" {
-    linux /live/vmlinuz boot=live components
+    set gfxpayload=keep
+    echo "Loading Linux Kernel..."
+    linux /live/vmlinuz boot=live components console=tty0
+    echo "Loading Initial Ramdisk..."
     initrd /live/initrd.img
+    echo "Booting Malik Game OS..."
 }
 
 menuentry "Malik Game OS (Safe Graphics / Nomodeset)" {
-    linux /live/vmlinuz boot=live nomodeset components
+    set gfxpayload=text
+    echo "Loading Linux Kernel in Safe VGA mode..."
+    linux /live/vmlinuz boot=live components nomodeset console=tty0
+    echo "Loading Initial Ramdisk..."
     initrd /live/initrd.img
+    echo "Booting in Safe Mode..."
 }
 
 menuentry "Malik Game OS (Debug Shell)" {
-    linux /live/vmlinuz boot=live components debug
+    set gfxpayload=keep
+    echo "Loading Kernel with Debug Shell..."
+    linux /live/vmlinuz boot=live components debug console=tty0
+    echo "Loading Initial Ramdisk..."
     initrd /live/initrd.img
 }
 GRUBEOF
