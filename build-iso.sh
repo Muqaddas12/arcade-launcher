@@ -86,44 +86,51 @@ exec ./malik-game-os
 STARTEOF
 chmod +x "$DEST_OPT/start.sh"
 
-echo "[+] Step 3: Configuring X11, autologin, and console permissions..."
-# Xwrapper config - allow non-console startx with root rights
+echo "[+] Step 3: Configuring X11, autostart service, and permissions..."
+# Xwrapper config - allow startx with root rights
 cat << 'XWREOF' > "$ROOTFS/etc/X11/Xwrapper.config"
 allowed_users=anybody
 needs_root_rights=yes
 XWREOF
 
-# tty1 autologin for user malik
-mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
-cat << 'AUTOLOGINEOF' > "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf"
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin malik --noclear %I $TERM
-Type=idle
-AUTOLOGINEOF
-
-# Configure malik shell profile to auto-launch X on tty1
 mkdir -p "$ROOTFS/home/malik"
-cat << 'PROFILESCRIPTEOF' > "$ROOTFS/home/malik/.bash_profile"
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    exec startx -- -keeptty
-fi
-PROFILESCRIPTEOF
-
 cat << 'XINITEOF' > "$ROOTFS/home/malik/.xinitrc"
 #!/bin/bash
-# Start Openbox window manager to manage fullscreen, window raising & focus
-openbox &
+if which openbox >/dev/null 2>&1; then
+    openbox &
+fi
 xset s off -dpms 2>/dev/null || true
 xsetroot -cursor_name left_ptr 2>/dev/null || true
 exec /opt/malik-game-os/start.sh
 XINITEOF
 chmod +x "$ROOTFS/home/malik/.xinitrc"
 
-# Disable legacy service so tty1 autologin cleanly owns the display
-rm -f "$ROOTFS/etc/systemd/system/multi-user.target.wants/malik-game-os.service" \
-      "$ROOTFS/etc/systemd/system/graphical.target.wants/malik-game-os.service" \
-      "$ROOTFS/etc/systemd/system/malik-game-os.service" 2>/dev/null || true
+# Create and enable malik-game-os.service
+cat << 'SVCEOF' > "$ROOTFS/etc/systemd/system/malik-game-os.service"
+[Unit]
+Description=Malik Game OS
+After=systemd-user-sessions.service
+After=network.target
+
+[Service]
+User=malik
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/startx /home/malik/.xinitrc -- :0
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target
+SVCEOF
+
+mkdir -p "$ROOTFS/etc/systemd/system/graphical.target.wants"
+ln -sf /etc/systemd/system/malik-game-os.service "$ROOTFS/etc/systemd/system/graphical.target.wants/malik-game-os.service"
+ln -sf /lib/systemd/system/graphical.target "$ROOTFS/etc/systemd/system/default.target"
+
+# Clean up any getty override
+rm -rf "$ROOTFS/etc/systemd/system/getty@tty1.service.d" 2>/dev/null || true
+rm -f "$ROOTFS/home/malik/.bash_profile" 2>/dev/null || true
 
 # Fix ownership for user 'malik' inside rootfs
 MALIK_UID=1000
