@@ -112,6 +112,8 @@ PROFILESCRIPTEOF
 
 cat << 'XINITEOF' > "$ROOTFS/home/malik/.xinitrc"
 #!/bin/bash
+# Start Openbox window manager to manage fullscreen, window raising & focus
+openbox &
 xset s off -dpms 2>/dev/null || true
 xsetroot -cursor_name left_ptr 2>/dev/null || true
 exec /opt/malik-game-os/start.sh
@@ -129,11 +131,16 @@ MALIK_GID=1000
 chown -R "$MALIK_UID:$MALIK_GID" "$DEST_OPT"
 chown -R "$MALIK_UID:$MALIK_GID" "$ROOTFS/home/malik"
 
-echo "[+] Step 4: Regenerating initramfs with live-boot hooks..."
+echo "[+] Step 4: Installing openbox and regenerating initramfs with live-boot hooks..."
+cp -f /etc/resolv.conf "$ROOTFS/etc/resolv.conf" 2>/dev/null || true
 mount --bind /dev "$ROOTFS/dev" 2>/dev/null || true
 mount --bind /dev/pts "$ROOTFS/dev/pts" 2>/dev/null || true
 mount -t proc proc "$ROOTFS/proc" 2>/dev/null || true
 mount -t sysfs sysfs "$ROOTFS/sys" 2>/dev/null || true
+
+# Install openbox if not already present
+chroot "$ROOTFS" apt update
+chroot "$ROOTFS" apt install -y --no-install-recommends openbox
 
 # Update initramfs inside rootfs so live-boot hooks are embedded
 chroot "$ROOTFS" update-initramfs -u -k all

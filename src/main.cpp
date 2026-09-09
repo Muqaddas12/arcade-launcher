@@ -759,12 +759,32 @@ int main()
                 gameRunning = false;
                 gamePid     = -1;
 
-                SDL_RestoreWindow(window);
+                SDL_ShowWindow(window);
+                if (settings.fullscreen)
+                {
+                    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+                }
                 SDL_RaiseWindow(window);
 
                 std::cout
                     << "Game exited. "
                     << "Returning to Malik Game OS.\n";
+            }
+            else
+            {
+                // Game is still running!
+                // Drain events without processing game input
+                while (SDL_PollEvent(&event))
+                {
+                    if (event.type == SDL_QUIT)
+                    {
+                        running = false;
+                    }
+                }
+
+                // Sleep to consume 0% CPU while game is playing
+                SDL_Delay(50);
+                continue; // Do not render anything while game is active!
             }
         }
 
@@ -881,7 +901,7 @@ int main()
                             {
                                 gamePid     = pid;
                                 gameRunning = true;
-                                SDL_MinimizeWindow(window);
+                                SDL_HideWindow(window);
                             }
                         }
                     }
@@ -1123,7 +1143,7 @@ int main()
                         {
                             gamePid     = pid;
                             gameRunning = true;
-                            SDL_MinimizeWindow(window);
+                            SDL_HideWindow(window);
                         }
                     }
                 }
@@ -1207,32 +1227,10 @@ int main()
         SDL_Color gray { 160, 165, 175, 255 };
 
         // --------------------------------------------------------
-        // GAME RUNNING overlay
-        // (shown while launcher is brought to front by Windows key)
-        // --------------------------------------------------------
-
-        if (gameRunning)
-        {
-            drawText(renderer, titleFont,
-                     "GAME RUNNING",
-                     70, 45, white);
-
-            drawText(renderer, font,
-                     "Press the Windows key to bring "
-                     "the launcher forward.",
-                     70, 140, gray);
-
-            drawText(renderer, font,
-                     "Launcher will restore automatically "
-                     "when the game exits.",
-                     70, 200, gray);
-        }
-
-        // --------------------------------------------------------
         // MAIN MENU
         // --------------------------------------------------------
 
-        else if (screen == Screen::MainMenu)
+        if (screen == Screen::MainMenu)
         {
             drawText(renderer, titleFont,
                      "MALIK GAME OS", 70, 45, white);
